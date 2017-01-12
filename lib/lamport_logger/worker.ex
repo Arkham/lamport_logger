@@ -1,7 +1,10 @@
 defmodule LamportLogger.Worker do
   defmodule State do
-    defstruct name: nil, logger: nil, seed: 0, sleep: 1000, jitter: 0, peers: []
+    defstruct name: nil, logger: nil, seed: 0, sleep: 1000, jitter: 0,
+      peers: [], worker_time: nil
   end
+
+  alias LamportLogger.Time
 
   def start(name, logger, seed, sleep, jitter) do
     spawn_link(fn ->
@@ -9,7 +12,8 @@ defmodule LamportLogger.Worker do
                   logger: logger,
                   seed: seed,
                   sleep: sleep,
-                  jitter: jitter})
+                  jitter: jitter,
+                  worker_time: Time.zero()})
     end)
   end
 
@@ -22,7 +26,7 @@ defmodule LamportLogger.Worker do
   end
 
   def init(%State{seed: seed} = state) do
-    :rand.seed(:exs1024, {seed, 10, 20})
+    :rand.seed(:exs1024, {seed, 0, 0})
 
     receive do
       {:peers, peers} ->
@@ -32,28 +36,29 @@ defmodule LamportLogger.Worker do
     end
   end
 
-  def loop(%State{name: name, logger: logger, sleep: sleep, jitter: jitter, peers: peers} = state) do
+  def loop(%State{name: name, logger: logger, sleep: sleep, jitter: jitter, peers: peers, worker_time: worker_time} = state) do
     wait = :rand.uniform(sleep)
 
     receive do
       {:message, time, message} ->
-        send(logger, {:log, name, time, {:received, message}})
-        loop(state)
+        worker_time = Time.merge_and_increase(time, worker_time)
+        send(logger, {:log, name, worker_time, {:recv, message}})
+        loop(%State{state | worker_time: worker_time})
       :stop ->
         :ok
       error ->
-        send(logger, {:log, name, :time, {:error, error}})
+        send(logger, {:log, name, worker_time, {:error, error}})
     after
       wait ->
         selected = select_peer(peers)
-        time = :na
-        message = {:hello, :rand.uniform(100)}
+        worker_time = Time.increase(worker_time)
+        message = {:hello, :rand.uniform(100_000)}
 
-        send(selected, {:message, time, message})
+        send(selected, {:message, worker_time, message})
         do_jitter(jitter)
 
-        send(logger, {:log, name, time, {:sending, message}})
-        loop(state)
+        send(logger, {:log, name, worker_time, {:send, message}})
+        loop(%State{state | worker_time: worker_time})
     end
   end
 
